@@ -1,0 +1,752 @@
+import React, { useState, useEffect, useRef } from "react";
+import { Music, Users, MessageCircle, Plus, Copy, Video, Mic, MicOff, VideoOff, Phone } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import * as api from "@/db/api";
+import type { RoomWithParticipants, RoomMessageWithProfile } from "@/types/types";
+import { supabase } from "@/db/supabase";
+
+const MusicPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  
+  // Room state
+  const [room, setRoom] = useState<RoomWithParticipants | null>(null);
+  const [roomName, setRoomName] = useState("");
+  const [roomCode, setRoomCode] = useState("");
+  const [musicUrl, setMusicUrl] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  
+  // Chat state
+  const [messages, setMessages] = useState<RoomMessageWithProfile[]>([]);
+  const [chatMessage, setChatMessage] = useState("");
+  
+  // Video call state
+  const [showVideoCall, setShowVideoCall] = useState(false);
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(false);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  
+  // User state
+  
+  // Dialog state
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [joinDialogOpen, setJoinDialogOpen] = useState(false);
+
+  useEffect(() => {
+    checkUser();
+    const roomCodeParam = searchParams.get("room");
+    if (roomCodeParam) {
+      handleJoinRoomByCode(roomCodeParam);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (room) {
+      loadMessages();
+      subscribeToMessages();
+      subscribeToRoomUpdates();
+    }
+  }, [room?.id]);
+
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, [showVideoCall, isVideoOn]);
+
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true
+      });
+      
+      localStreamRef.current = stream;
+      
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.volume = 1.0;
+      }
+      
+      setIsVideoOn(true);
+      setIsMicOn(true);
+      
+      toast({
+        title: "Camera & Mic started",
+        description: "Your camera and microphone are now active",
+      });
+    } catch (error) {
+      console.error('Error accessing camera:', error);
+      toast({
+        title: "Camera access denied",
+        description: "Please allow camera and microphone access",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const stopCamera = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    setIsVideoOn(false);
+    setIsMicOn(false);
+  };
+
+  const toggleVideo = () => {
+    if (!localStreamRef.current) {
+      startCamera();
+      return;
+    }
+    
+    const videoTrack = localStreamRef.current.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      setIsVideoOn(videoTrack.enabled);
+    }
+  };
+
+  const toggleMic = () => {
+    if (!localStreamRef.current) return;
+    
+    const audioTrack = localStreamRef.current.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      setIsMicOn(audioTrack.enabled);
+    }
+  };
+
+  const endCall = () => {
+    stopCamera();
+    setShowVideoCall(false);
+    toast({
+      title: "Call ended",
+      description: "Video call has been ended",
+    });
+  };
+
+  const subscribeToMessages = () => {
+    if (!room) return;
+    
+    const channel = supabase
+      .channel(`room_messages:${room.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'room_messages',
+          filter: `room_id=eq.${room.id}`
+        },
+        () => {
+          loadMessages();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  };
+
+  const subscribeToRoomUpdates = () => {
+    if (!room) return;
+    
+    const channel = supabase
+      .channel(`room:${room.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'rooms',
+          filter: `id=eq.${room.id}`
+        },
+        () => {
+          refreshRoom();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  };
+
+  const checkUser = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast({
+        title: "Authentication required",
+        description: "Please log in to use music rooms",
+        variant: "destructive",
+      });
+      return;
+    }
+  };
+
+  const loadMessages = async () => {
+    if (!room) return;
+    try {
+      console.log('Loading messages for room:', room.id);
+      const msgs = await api.getRoomMessages(room.id);
+      console.log('Loaded messages:', msgs.length, msgs);
+      setMessages(msgs);
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      toast({
+        title: "Error loading messages",
+        description: "Could not load chat messages",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const refreshRoom = async () => {
+    if (!room) return;
+    try {
+      const updated = await api.getRoomWithParticipants(room.id);
+      setRoom(updated);
+    } catch (error) {
+      console.error('Error refreshing room:', error);
+    }
+  };
+
+  const handleCreateRoom = async () => {
+    if (!roomName.trim()) {
+      toast({
+        title: "Room name required",
+        description: "Please enter a name for your room",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const newRoom = await api.createRoom(roomName, "music");
+      setRoom(newRoom);
+      setCreateDialogOpen(false);
+      setRoomName("");
+      toast({
+        title: "Room created",
+        description: `Music room "${newRoom.name}" has been created`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error creating room",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleJoinRoom = async () => {
+    if (!roomCode.trim()) {
+      toast({
+        title: "Room code required",
+        description: "Please enter a room code",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const joinedRoom = await api.joinRoomByCode(roomCode);
+      setRoom(joinedRoom);
+      setJoinDialogOpen(false);
+      setRoomCode("");
+      toast({
+        title: "Joined room",
+        description: `You've joined "${joinedRoom.name}"`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error joining room",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleJoinRoomByCode = async (code: string) => {
+    try {
+      const joinedRoom = await api.joinRoomByCode(code);
+      setRoom(joinedRoom);
+      toast({
+        title: "Joined room",
+        description: `You've joined "${joinedRoom.name}"`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error joining room",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleLeaveRoom = async () => {
+    if (!room) return;
+    
+    try {
+      await api.leaveRoom(room.id);
+      setRoom(null);
+      setMessages([]);
+      stopCamera();
+      setShowVideoCall(false);
+      toast({
+        title: "Left room",
+        description: "You've left the music room",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error leaving room",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleUpdateMusicUrl = async () => {
+    if (!room || !musicUrl.trim()) return;
+    
+    try {
+      await api.updateRoom(room.id, { video_url: musicUrl });
+      setMusicUrl("");
+      toast({
+        title: "Music updated",
+        description: "The music URL has been updated",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error updating music",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!room || !chatMessage.trim()) return;
+    
+    try {
+      console.log('Sending message:', chatMessage, 'to room:', room.id);
+      await api.sendMessage(room.id, chatMessage);
+      setChatMessage("");
+      
+      // Immediately reload messages
+      await loadMessages();
+      
+      console.log('Message sent and messages reloaded');
+    } catch (error: any) {
+      console.error('Error sending message:', error);
+      toast({
+        title: "Error sending message",
+        description: error.message || "Failed to send message",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const copyRoomLink = () => {
+    if (!room) return;
+    const link = `${window.location.origin}/music?room=${room.code}`;
+    navigator.clipboard.writeText(link);
+    toast({
+      title: "Link copied",
+      description: "Room link copied to clipboard",
+    });
+  };
+
+  const extractYouTubeId = (url: string): string | null => {
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+      /^([a-zA-Z0-9_-]{11})$/
+    ];
+    
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return match[1];
+    }
+    return null;
+  };
+
+  const formatTime = (timestamp: string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const getYouTubeEmbedUrl = (url: string | null | undefined): string => {
+    if (!url) return "";
+    const videoId = extractYouTubeId(url);
+    if (!videoId) return "";
+    return `https://www.youtube.com/embed/${videoId}?autoplay=0&enablejsapi=1`;
+  };
+
+  // No room view
+  if (!room) {
+    return (
+      <div className="min-h-screen gradient-bg-dark">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="mb-8">
+            <h1 className="text-4xl font-bold mb-2 neon-glow" style={{ fontFamily: 'Lacquer, cursive' }}>
+              Music Together
+            </h1>
+            <p className="text-muted-foreground">Listen to music in sync with your friends</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+            <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+              <DialogTrigger asChild>
+                <Card 
+                  className="bg-card/50 backdrop-blur-sm border-primary/20 card-glow cursor-pointer hover:border-primary/40 transition-all"
+                  onClick={() => {
+                    console.log('Create Music Room card clicked');
+                    setCreateDialogOpen(true);
+                  }}
+                >
+                  <CardHeader>
+                    <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center mb-4">
+                      <Plus className="h-6 w-6 text-primary" />
+                    </div>
+                    <CardTitle>Create Music Room</CardTitle>
+                    <CardDescription>Start a new music listening session</CardDescription>
+                  </CardHeader>
+                </Card>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Create Music Room</DialogTitle>
+                  <DialogDescription>
+                    Create a room to listen to music together with friends
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div>
+                    <Input
+                      placeholder="Room name"
+                      value={roomName}
+                      onChange={(e) => setRoomName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
+                    />
+                  </div>
+                  <Button onClick={handleCreateRoom} className="w-full">
+                    Create Room
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={joinDialogOpen} onOpenChange={setJoinDialogOpen}>
+              <DialogTrigger asChild>
+                <Card 
+                  className="bg-card/50 backdrop-blur-sm border-primary/20 card-glow cursor-pointer hover:border-primary/40 transition-all"
+                  onClick={() => {
+                    console.log('Join Music Room card clicked');
+                    setJoinDialogOpen(true);
+                  }}
+                >
+                  <CardHeader>
+                    <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center mb-4">
+                      <Users className="h-6 w-6 text-primary" />
+                    </div>
+                    <CardTitle>Join Music Room</CardTitle>
+                    <CardDescription>Join an existing music session</CardDescription>
+                  </CardHeader>
+                </Card>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Join Music Room</DialogTitle>
+                  <DialogDescription>
+                    Enter the room code to join
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div>
+                    <Input
+                      placeholder="Room code"
+                      value={roomCode}
+                      onChange={(e) => setRoomCode(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
+                    />
+                  </div>
+                  <Button onClick={handleJoinRoom} className="w-full">
+                    Join Room
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          <div className="mt-12 max-w-4xl mx-auto">
+            <Card className="bg-card/50 backdrop-blur-sm border-primary/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Music className="h-5 w-5 text-primary" />
+                  How It Works
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex gap-4">
+                  <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+                    <span className="text-sm font-bold text-primary">1</span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold mb-1">Create or Join a Room</h3>
+                    <p className="text-sm text-muted-foreground">Start a new music session or join your friends</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+                    <span className="text-sm font-bold text-primary">2</span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold mb-1">Add Music</h3>
+                    <p className="text-sm text-muted-foreground">Paste a YouTube music link to play together</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+                    <span className="text-sm font-bold text-primary">3</span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold mb-1">Listen Together</h3>
+                    <p className="text-sm text-muted-foreground">Enjoy synchronized music playback with chat and video call</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Room view
+  return (
+    <div className="min-h-screen gradient-bg-dark">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Room Header */}
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold mb-1 neon-glow" style={{ fontFamily: 'Lacquer, cursive' }}>
+              {room.name}
+            </h1>
+            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+              <span>Room Code: <span className="font-mono text-primary">{room.code}</span></span>
+              <Button variant="ghost" size="sm" onClick={copyRoomLink}>
+                <Copy className="h-4 w-4 mr-1" />
+                Copy Link
+              </Button>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setShowVideoCall(!showVideoCall)}>
+              <Video className="h-4 w-4 mr-2" />
+              {showVideoCall ? "Hide" : "Video Call"}
+            </Button>
+            <Button variant="destructive" onClick={handleLeaveRoom}>
+              Leave Room
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+          {/* Main Content */}
+          <div className="xl:col-span-2 space-y-6">
+            {/* Music Player */}
+            <Card className="bg-card/50 backdrop-blur-sm border-primary/20 card-glow">
+              <CardContent className="pt-6">
+                {room.video_url ? (
+                  <div className="aspect-video bg-black rounded-lg overflow-hidden mb-4">
+                    <iframe
+                      src={getYouTubeEmbedUrl(room.video_url)}
+                      className="w-full h-full"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                ) : (
+                  <div className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 rounded-lg flex items-center justify-center mb-4">
+                    <div className="text-center">
+                      <Music className="h-16 w-16 text-primary mx-auto mb-4" />
+                      <p className="text-muted-foreground">No music playing</p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Paste YouTube music link..."
+                      value={musicUrl}
+                      onChange={(e) => setMusicUrl(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleUpdateMusicUrl()}
+                    />
+                    <Button onClick={handleUpdateMusicUrl}>
+                      
+                      Play
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    💡 Tip: Search for music on YouTube and paste the link here
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Video Call Panel */}
+            {showVideoCall && (
+              <Card className="bg-card/50 backdrop-blur-sm border-primary/20">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Video className="h-5 w-5 text-primary" />
+                    Video Call
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div className="aspect-video bg-black rounded-lg overflow-hidden relative">
+                      <video
+                        ref={localVideoRef}
+                        autoPlay
+                        playsInline
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute bottom-2 left-2 bg-black/50 px-2 py-1 rounded text-xs text-white">
+                        You
+                      </div>
+                    </div>
+                    <div className="aspect-video bg-muted/30 rounded-lg flex items-center justify-center">
+                      <Users className="h-8 w-8 text-muted-foreground" />
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-center gap-2">
+                    <Button
+                      variant={isMicOn ? "default" : "destructive"}
+                      size="icon"
+                      onClick={toggleMic}
+                    >
+                      {isMicOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
+                    </Button>
+                    <Button
+                      variant={isVideoOn ? "default" : "destructive"}
+                      size="icon"
+                      onClick={toggleVideo}
+                    >
+                      {isVideoOn ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="icon"
+                      onClick={endCall}
+                    >
+                      <Phone className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          {/* Sidebar */}
+          <div className="space-y-6">
+            {/* Participants */}
+            <Card className="bg-card/50 backdrop-blur-sm border-primary/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="h-5 w-5 text-primary" />
+                  Participants
+                </CardTitle>
+                <CardDescription>{room.participants?.length || 0} listening</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-32">
+                  <div className="space-y-2">
+                    {room.participants?.map((participant) => (
+                      <div key={participant.id} className="flex items-center gap-2 p-2 rounded-lg bg-muted/30">
+                        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                          <span className="text-sm font-bold text-primary">
+                            {participant.profile?.username?.[0]?.toUpperCase() || '?'}
+                          </span>
+                        </div>
+                        <span className="text-sm font-medium truncate">
+                          {participant.profile?.display_name || participant.profile?.username || 'Unknown'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+
+            {/* Chat */}
+            <Card className="bg-card/50 backdrop-blur-sm border-primary/20">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <MessageCircle className="h-5 w-5 text-primary" />
+                  Chat
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-96 mb-4 pr-4">
+                  <div className="space-y-3">
+                    {messages.length === 0 ? (
+                      <div className="text-center text-sm text-muted-foreground py-8">
+                        No messages yet. Start the conversation!
+                      </div>
+                    ) : (
+                      messages.map((msg) => (
+                        <div key={msg.id} className="space-y-1">
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-sm font-semibold text-primary truncate">
+                              {msg.profile?.display_name || msg.profile?.username || 'Unknown'}
+                            </span>
+                            <span className="text-xs text-muted-foreground flex-shrink-0">
+                              {formatTime(msg.created_at)}
+                            </span>
+                          </div>
+                          <p className="text-sm text-foreground bg-muted/30 rounded-lg px-3 py-2 break-words">
+                            {msg.message}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+                
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Type a message..."
+                    value={chatMessage}
+                    onChange={(e) => setChatMessage(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                  />
+                  <Button onClick={handleSendMessage}>
+                    Send
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default MusicPage;
