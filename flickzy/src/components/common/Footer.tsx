@@ -1,5 +1,5 @@
 import React from "react";
-import { Film, Music, Gamepad2, Video } from "lucide-react";
+import { Film, Music, Gamepad2, Video, Instagram, Mail, Linkedin } from "lucide-react";
 
 const Footer: React.FC = () => {
   const currentYear = new Date().getFullYear();
@@ -43,12 +43,40 @@ const Footer: React.FC = () => {
 
           <div>
             <h3 className="text-lg font-semibold text-foreground mb-4">
-              Connect
+              Connect With Us
             </h3>
-            <div className="space-y-2 text-muted-foreground">
-              <p>Join our community</p>
-              <p>Share experiences</p>
-              <p>Stay synchronized</p>
+            <div className="space-y-3">
+              <a 
+                href="https://instagram.com/flickzy.io" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 text-muted-foreground hover:text-primary transition-all duration-300 group"
+              >
+                <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 group-hover:shadow-[0_0_15px_rgba(124,58,237,0.4)] transition-all duration-300">
+                  <Instagram className="h-4 w-4 text-primary" />
+                </div>
+                <span className="group-hover:text-white transition-colors">flickzy.io</span>
+              </a>
+              <a 
+                href="mailto:flickzysocial@gmail.com"
+                className="flex items-center gap-3 text-muted-foreground hover:text-primary transition-all duration-300 group"
+              >
+                <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 group-hover:shadow-[0_0_15px_rgba(124,58,237,0.4)] transition-all duration-300">
+                  <Mail className="h-4 w-4 text-primary" />
+                </div>
+                <span className="group-hover:text-white transition-colors">flickzysocial@gmail.com</span>
+              </a>
+              <a 
+                href="https://linkedin.com/company/flickzy" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 text-muted-foreground hover:text-primary transition-all duration-300 group"
+              >
+                <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 group-hover:shadow-[0_0_15px_rgba(124,58,237,0.4)] transition-all duration-300">
+                  <Linkedin className="h-4 w-4 text-primary" />
+                </div>
+                <span className="group-hover:text-white transition-colors">Flickzy</span>
+              </a>
             </div>
           </div>
         </div>
